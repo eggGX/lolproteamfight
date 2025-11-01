@@ -6,6 +6,17 @@ function createReactive(target, notify) {
   }
 
   const cache = new WeakMap();
+  const mutatingArrayMethods = new Set([
+    'copyWithin',
+    'fill',
+    'pop',
+    'push',
+    'reverse',
+    'shift',
+    'sort',
+    'splice',
+    'unshift'
+  ]);
 
   const wrap = (obj) => {
     if (!isObject(obj)) {
@@ -20,12 +31,15 @@ function createReactive(target, notify) {
       get(original, key, receiver) {
         const value = Reflect.get(original, key, receiver);
 
-        if (Array.isArray(original) && typeof value === 'function') {
-          return function (...args) {
-            const result = value.apply(original, args);
-            notify();
-            return result;
-          };
+        if (Array.isArray(original) && typeof key === 'string' && typeof value === 'function') {
+          if (mutatingArrayMethods.has(key)) {
+            return function (...args) {
+              const result = value.apply(original, args);
+              notify();
+              return result;
+            };
+          }
+          return value.bind(original);
         }
 
         if (typeof value === 'function') {
