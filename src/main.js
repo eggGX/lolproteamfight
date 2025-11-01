@@ -83,6 +83,14 @@ function formatDateLabel(value) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function formatWinRate(wins, total) {
+  if (!total) {
+    return '0%';
+  }
+  const rate = Math.round(((wins / total) * 100) * 10) / 10;
+  return `${Number.isInteger(rate) ? Math.round(rate) : rate.toFixed(1)}%`;
+}
+
 function createSortButton(ctx, key, label) {
   const isActive = ctx.statsSort.key === key;
   const indicator = ctx.statsSort.direction === 'desc' ? '↓' : '↑';
@@ -211,6 +219,46 @@ function renderTeamLaneSection(ctx, team) {
         )
       ]);
     })
+  ]);
+}
+
+function renderStatsTable(ctx) {
+  const usage = ctx.sortedChampionUsage();
+  if (!usage.length) {
+    return h('div', { class: 'empty-state' }, 'まだ試合データがありません。');
+  }
+
+  return h('table', { class: 'stats-table' }, [
+    h('thead', {}, [
+      h('tr', {}, [
+        h('th', {}, 'チャンピオン'),
+        h('th', { class: 'numeric' }, '合計'),
+        h('th', { class: 'numeric' }, '勝利'),
+        h('th', { class: 'numeric' }, '敗北'),
+        h('th', { class: 'numeric' }, '勝率')
+      ])
+    ]),
+    h(
+      'tbody',
+      {},
+      usage.map((entry) =>
+        h('tr', { key: entry.champion.id }, [
+          h('td', {}, [
+            h('div', { class: 'champion-cell' }, [
+              h('img', { src: entry.champion.image, alt: entry.champion.name }),
+              h('div', { class: 'details' }, [
+                h('div', { class: 'name' }, entry.champion.name),
+                entry.champion.role ? h('div', { class: 'role' }, entry.champion.role) : null
+              ])
+            ])
+          ]),
+          h('td', { class: 'numeric' }, String(entry.total)),
+          h('td', { class: 'numeric' }, String(entry.wins)),
+          h('td', { class: 'numeric' }, String(entry.losses)),
+          h('td', { class: 'numeric' }, formatWinRate(entry.wins, entry.total))
+        ])
+      )
+    )
   ]);
 }
 

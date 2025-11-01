@@ -291,6 +291,27 @@ textarea {
   align-items: center;
 }
 
+.stats-table .champion-cell .details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stats-table .champion-cell .name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stats-table .champion-cell .role {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.stats-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .champion-usage-meta {
   display: flex;
   gap: 12px;
