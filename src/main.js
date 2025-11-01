@@ -2,7 +2,77 @@ import { createApp, h, Fragment } from './lib/vue-lite.js';
 import { champions as defaultChampions } from './champions.js';
 import { loadMatches, saveMatches } from './storage.js';
 
-const MAX_CHAMPION_SELECTION = 5;
+const LANES = [
+  { key: 'top', label: 'トップ' },
+  { key: 'jungle', label: 'ジャングル' },
+  { key: 'mid', label: 'ミッド' },
+  { key: 'adc', label: 'ボット(ADC)' },
+  { key: 'support', label: 'サポート' }
+];
+
+const TEAMS = [
+  { key: 'blue', label: 'ブルーチーム' },
+  { key: 'red', label: 'レッドチーム' }
+];
+
+const TOTAL_SLOTS = LANES.length * TEAMS.length;
+
+function createEmptyDraft() {
+  return TEAMS.reduce((teamAcc, team) => {
+    const lanes = LANES.reduce((laneAcc, lane) => {
+      laneAcc[lane.key] = null;
+      return laneAcc;
+    }, {});
+    teamAcc[team.key] = lanes;
+    return teamAcc;
+  }, {});
+}
+
+function listChampionIdsFromDraft(draft) {
+  if (!draft) {
+    return [];
+  }
+  const result = [];
+  TEAMS.forEach(({ key: teamKey }) => {
+    const teamDraft = draft[teamKey] || {};
+    LANES.forEach(({ key: laneKey }) => {
+      const value = teamDraft[laneKey];
+      if (value) {
+        result.push(value);
+      }
+    });
+  });
+  return result;
+}
+
+function normalizeMatch(match) {
+  if (!match) {
+    return null;
+  }
+  const normalized = { ...match };
+  if (!match.champions || Array.isArray(match.champions)) {
+    const draft = createEmptyDraft();
+    const source = Array.isArray(match.champions)
+      ? match.champions
+      : Array.isArray(match.selectedChampions)
+        ? match.selectedChampions
+        : [];
+    source.slice(0, LANES.length).forEach((championId, index) => {
+      draft.blue[LANES[index].key] = championId;
+    });
+    normalized.champions = draft;
+  } else {
+    const draft = createEmptyDraft();
+    TEAMS.forEach(({ key: teamKey }) => {
+      LANES.forEach(({ key: laneKey }) => {
+        draft[teamKey][laneKey] = match.champions?.[teamKey]?.[laneKey] || null;
+      });
+    });
+    normalized.champions = draft;
+  }
+  delete normalized.selectedChampions;
+  return normalized;
+}
 
 function formatDateLabel(value) {
   if (!value) return '未設定';
@@ -27,38 +97,28 @@ function createSortButton(ctx, key, label) {
   );
 }
 
-function renderChampionTag(ctx, championId) {
-  const champion = ctx.findChampion(championId);
-  if (!champion) return null;
-  return h('div', { class: 'champion-tag' }, [
-    h('img', { src: champion.image, alt: champion.name }),
-    h('span', {}, champion.name),
-    h(
-      'button',
-      {
-        type: 'button',
-        onClick: () => ctx.removeChampionFromForm(championId)
-      },
-      '×'
-    )
-  ]);
-}
-
 function renderChampionPicker(ctx) {
   const filteredChampions = ctx.filteredChampionList();
+  const context = ctx.pickerContext;
+  const laneLabel = context ? LANES.find((lane) => lane.key === context.lane)?.label : '';
+  const teamLabel = context ? TEAMS.find((team) => team.key === context.team)?.label : '';
+
   return h('div', { class: 'modal-backdrop' }, [
     h('div', { class: 'modal-panel' }, [
-      h('div', { class: 'section-title' }, [
+      h('div', { class: 'section-title modal-header' }, [
         h('h2', {}, 'チャンピオンを選択'),
-        h(
-          'button',
-          {
-            type: 'button',
-            class: 'secondary-btn',
-            onClick: ctx.closeChampionPicker
-          },
-          '閉じる'
-        )
+        h('div', { class: 'modal-header-actions' }, [
+          context ? h('span', { class: 'tag' }, `${teamLabel} - ${laneLabel}`) : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'secondary-btn',
+              onClick: ctx.closeChampionPicker
+            },
+            '閉じる'
+          )
+        ])
       ]),
       h('div', {}, [
         h('label', { for: 'champion-search' }, 'チャンピオン検索'),
@@ -70,6 +130,7 @@ function renderChampionPicker(ctx) {
           onInput: (event) => (ctx.championSearch = event.target.value)
         })
       ]),
+      ctx.pickerError ? h('div', { class: 'error-message' }, ctx.pickerError) : null,
       filteredChampions.length === 0
         ? h('div', { class: 'empty-state' }, '該当するチャンピオンが見つかりません。')
         : h(
@@ -97,7 +158,7 @@ function renderChampionPicker(ctx) {
                       {
                         type: 'button',
                         class: 'primary-btn',
-                        onClick: () => ctx.addChampionToForm(champion.id)
+                        onClick: () => ctx.assignChampionToContext(champion.id)
                       },
                       '追加'
                     )
@@ -108,55 +169,73 @@ function renderChampionPicker(ctx) {
   ]);
 }
 
-function renderStatsTable(ctx) {
-  const usage = ctx.sortedChampionUsage();
-  if (usage.length === 0) {
-    return h('div', { class: 'empty-state' }, '試合が登録されると、ここにチャンピオン使用状況が表示されます。');
-  }
+function renderTeamLaneSection(ctx, team) {
+  const teamDraft = ctx.matchForm.champions[team.key];
+  return h('div', { class: `team-column ${team.key}` }, [
+    h('h3', {}, team.label),
+    ...LANES.map((lane) => {
+      const championId = teamDraft[lane.key];
+      const champion = championId ? ctx.findChampion(championId) : null;
+      return h('div', { class: 'lane-slot' }, [
+        h('div', { class: 'slot-header' }, [
+          h('span', { class: 'lane-name' }, lane.label),
+          champion
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'secondary-btn compact',
+                  onClick: () => ctx.clearChampionSlot(team.key, lane.key)
+                },
+                'クリア'
+              )
+            : null
+        ]),
+        champion
+          ? h('div', { class: 'selected-champion' }, [
+              h('img', { src: champion.image, alt: champion.name }),
+              h('div', { class: 'details' }, [
+                h('span', { class: 'name' }, champion.name),
+                champion.role ? h('span', { class: 'role' }, champion.role) : null
+              ])
+            ])
+          : h('div', { class: 'selected-champion empty' }, '未選択'),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'primary-btn lane-action',
+            onClick: () => ctx.openChampionPicker(team.key, lane.key)
+          },
+          champion ? '変更する' : '選択する'
+        )
+      ]);
+    })
+  ]);
+}
 
-  const headerCell = (label, key) =>
-    h(
-      'th',
-      key
-        ? {
-            onClick: () => ctx.setStatsSort(key)
-          }
-        : {},
-      label
-    );
-
-  return h('table', { class: 'stats-table' }, [
-    h('thead', {}, [
-      h('tr', {}, [
-        headerCell('チャンピオン'),
-        headerCell('合計', 'total'),
-        headerCell('勝利', 'wins'),
-        headerCell('敗北', 'losses'),
-        headerCell('勝率')
-      ])
-    ]),
-    h(
-      'tbody',
-      {},
-      usage.map((item) => {
-        const winRate = item.total === 0 ? '-' : `${Math.round((item.wins / item.total) * 100)}%`;
-        return h('tr', {}, [
-          h('td', { class: 'champion-cell' }, [
-            h('img', { src: item.champion.image, alt: item.champion.name }),
-            h('span', {}, item.champion.name)
-          ]),
-          h('td', {}, String(item.total)),
-          h('td', {}, String(item.wins)),
-          h('td', {}, String(item.losses)),
-          h('td', {}, winRate)
-        ]);
-      })
-    )
+function renderMatchTeamDraft(ctx, match, team) {
+  const draft = match.champions?.[team.key] || {};
+  return h('div', { class: `team-draft ${team.key}` }, [
+    h('h3', {}, team.label),
+    ...LANES.map((lane) => {
+      const championId = draft[lane.key];
+      const champion = championId ? ctx.findChampion(championId) : null;
+      return h('div', { class: 'lane-row' }, [
+        h('span', { class: 'lane-label' }, lane.label),
+        champion
+          ? h('div', { class: 'lane-champion' }, [
+              h('img', { src: champion.image, alt: champion.name, title: champion.name }),
+              h('span', {}, champion.name)
+            ])
+          : h('span', { class: 'lane-champion empty' }, '未登録')
+      ]);
+    })
   ]);
 }
 
 function renderMatchCard(ctx, match) {
-  const championBadges = match.champions
+  const championBadges = listChampionIdsFromDraft(match.champions)
     .map((id) => ctx.findChampion(id))
     .filter(Boolean);
 
@@ -165,9 +244,7 @@ function renderMatchCard(ctx, match) {
       h('div', {}, [
         h('div', { class: 'match-title' }, [
           h('strong', {}, match.teamName || '未設定'),
-          match.opponent
-            ? h('span', {}, ` vs ${match.opponent}`)
-            : null
+          match.opponent ? h('span', {}, ` vs ${match.opponent}`) : null
         ])
       ]),
       h(
@@ -195,9 +272,8 @@ function renderMatchCard(ctx, match) {
           )
         )
       : h('div', { class: 'helper-text' }, 'チャンピオンは登録されていません。'),
-    match.notes
-      ? h('div', { class: 'helper-text' }, `メモ: ${match.notes}`)
-      : null
+    h('div', { class: 'match-draft' }, TEAMS.map((team) => renderMatchTeamDraft(ctx, match, team))),
+    match.notes ? h('div', { class: 'helper-text' }, `メモ: ${match.notes}`) : null
   ]);
 }
 
@@ -206,13 +282,13 @@ const App = {
     const today = new Date().toISOString().slice(0, 10);
     const state = {
       champions: defaultChampions,
-      matches: loadMatches(),
+      matches: loadMatches().map(normalizeMatch).filter(Boolean),
       matchForm: {
         teamName: '',
         opponent: '',
         side: 'blue',
         result: 'win',
-        selectedChampions: [],
+        champions: createEmptyDraft(),
         notes: '',
         matchDate: today
       },
@@ -224,12 +300,13 @@ const App = {
       },
       championSearch: '',
       showChampionPicker: false,
+      pickerContext: null,
+      pickerError: '',
       statsSort: {
         key: 'total',
         direction: 'desc'
       },
-      formError: '',
-      maxChampions: MAX_CHAMPION_SELECTION
+      formError: ''
     };
 
     state.resetForm = function () {
@@ -237,7 +314,7 @@ const App = {
       this.matchForm.opponent = '';
       this.matchForm.side = 'blue';
       this.matchForm.result = 'win';
-      this.matchForm.selectedChampions = [];
+      this.matchForm.champions = createEmptyDraft();
       this.matchForm.notes = '';
       this.matchForm.matchDate = new Date().toISOString().slice(0, 10);
       this.formError = '';
@@ -247,33 +324,60 @@ const App = {
       return this.champions.find((champion) => champion.id === id) || null;
     };
 
+    state.getAllSelectedChampionIds = function () {
+      return listChampionIdsFromDraft(this.matchForm.champions);
+    };
+
+    state.selectedChampionCount = function () {
+      return this.getAllSelectedChampionIds().length;
+    };
+
     state.isChampionSelected = function (id) {
-      return this.matchForm.selectedChampions.includes(id);
-    };
-
-    state.addChampionToForm = function (id) {
-      if (this.matchForm.selectedChampions.includes(id)) {
-        return;
+      const selected = this.getAllSelectedChampionIds();
+      if (this.pickerContext) {
+        const current = this.matchForm.champions[this.pickerContext.team][this.pickerContext.lane];
+        if (current === id) {
+          return false;
+        }
       }
-      if (this.matchForm.selectedChampions.length >= this.maxChampions) {
-        this.formError = `チャンピオンは最大${this.maxChampions}体まで選択できます。`;
-        return;
-      }
-      this.matchForm.selectedChampions = [...this.matchForm.selectedChampions, id];
-      this.formError = '';
+      return selected.includes(id);
     };
 
-    state.removeChampionFromForm = function (id) {
-      this.matchForm.selectedChampions = this.matchForm.selectedChampions.filter((championId) => championId !== id);
-    };
-
-    state.openChampionPicker = function () {
+    state.openChampionPicker = function (team, lane) {
       this.championSearch = '';
+      this.pickerContext = { team, lane };
+      this.pickerError = '';
       this.showChampionPicker = true;
     };
 
     state.closeChampionPicker = function () {
       this.showChampionPicker = false;
+      this.pickerContext = null;
+      this.pickerError = '';
+    };
+
+    state.assignChampionToContext = function (id) {
+      if (!this.pickerContext) {
+        return;
+      }
+      const { team, lane } = this.pickerContext;
+      const currentId = this.matchForm.champions[team][lane];
+      if (currentId === id) {
+        this.closeChampionPicker();
+        return;
+      }
+      if (this.isChampionSelected(id)) {
+        this.pickerError = 'このチャンピオンは既に別のレーンで使用されています。';
+        return;
+      }
+      this.matchForm.champions[team][lane] = id;
+      this.pickerError = '';
+      this.closeChampionPicker();
+    };
+
+    state.clearChampionSlot = function (team, lane) {
+      this.matchForm.champions[team][lane] = null;
+      this.formError = '';
     };
 
     state.setSide = function (side) {
@@ -292,7 +396,9 @@ const App = {
       return this.champions.filter((champion) => {
         return (
           champion.name.toLowerCase().includes(query) ||
-          champion.role.toLowerCase().includes(query)
+          champion.role.toLowerCase().includes(query) ||
+          champion.positions.some((pos) => pos.toLowerCase().includes(query)) ||
+          champion.classes.some((cls) => cls.toLowerCase().includes(query))
         );
       });
     };
@@ -303,8 +409,18 @@ const App = {
         this.formError = '使用チームを入力してください。';
         return;
       }
-      if (this.matchForm.selectedChampions.length === 0) {
-        this.formError = '少なくとも1体のチャンピオンを選択してください。';
+
+      const missingSlots = [];
+      TEAMS.forEach(({ key: teamKey }) => {
+        LANES.forEach(({ key: laneKey }) => {
+          if (!this.matchForm.champions[teamKey][laneKey]) {
+            missingSlots.push([teamKey, laneKey]);
+          }
+        });
+      });
+
+      if (missingSlots.length > 0) {
+        this.formError = 'すべてのレーンにチャンピオンを登録してください。';
         return;
       }
 
@@ -314,7 +430,7 @@ const App = {
         opponent: this.matchForm.opponent.trim(),
         side: this.matchForm.side,
         result: this.matchForm.result,
-        champions: [...this.matchForm.selectedChampions],
+        champions: JSON.parse(JSON.stringify(this.matchForm.champions)),
         notes: this.matchForm.notes.trim(),
         matchDate: this.matchForm.matchDate,
         createdAt: new Date().toISOString()
@@ -386,7 +502,7 @@ const App = {
       });
 
       this.matches.forEach((match) => {
-        match.champions.forEach((championId) => {
+        listChampionIdsFromDraft(match.champions).forEach((championId) => {
           if (!usageMap.has(championId)) {
             const champion = this.findChampion(championId) || {
               id: championId,
@@ -441,7 +557,6 @@ const App = {
     return state;
   },
   render(ctx) {
-    const selectedChampionTags = ctx.matchForm.selectedChampions.map((id) => renderChampionTag(ctx, id)).filter(Boolean);
     const matches = ctx.filteredMatches();
 
     return h(Fragment, {}, [
@@ -454,7 +569,8 @@ const App = {
           h('div', { class: 'section-title' }, [
             h('h2', {}, '試合を登録'),
             h('div', { class: 'tag-list' }, [
-              h('span', { class: 'tag' }, `登録試合数: ${ctx.matches.length}`)
+              h('span', { class: 'tag' }, `登録試合数: ${ctx.matches.length}`),
+              h('span', { class: 'tag' }, `チャンピオン選択 ${ctx.selectedChampionCount()}/${TOTAL_SLOTS}`)
             ])
           ]),
           h(
@@ -539,22 +655,7 @@ const App = {
                   )
                 ])
               ]),
-              h('div', {}, [
-                h('label', {}, 'チャンピオン (最大5体)'),
-                h('div', { class: 'selected-champions' }, selectedChampionTags.length ? selectedChampionTags : [h('span', { class: 'helper-text' }, 'チャンピオンを選択してください。')]),
-                h('div', { class: 'form-actions' }, [
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      class: 'secondary-btn',
-                      onClick: ctx.openChampionPicker
-                    },
-                    'チャンピオンを選ぶ'
-                  ),
-                  h('span', { class: 'helper-text' }, `${ctx.matchForm.selectedChampions.length}/${ctx.maxChampions} 選択中`)
-                ])
-              ]),
+              h('div', { class: 'lane-selection' }, TEAMS.map((team) => renderTeamLaneSection(ctx, team))),
               h('div', {}, [
                 h('label', { for: 'match-notes' }, 'メモ'),
                 h('textarea', {
@@ -564,9 +665,7 @@ const App = {
                   onInput: (event) => (ctx.matchForm.notes = event.target.value)
                 })
               ]),
-              ctx.formError
-                ? h('div', { class: 'error-message' }, ctx.formError)
-                : null,
+              ctx.formError ? h('div', { class: 'error-message' }, ctx.formError) : null,
               h(
                 'div',
                 { class: 'form-actions' },
